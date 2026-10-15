@@ -27,27 +27,28 @@ func TestIsRemotePath(t *testing.T) {
 	}
 }
 
-func TestParseCloudPath(t *testing.T) {
+func TestParseRemotePath(t *testing.T) {
 	tests := []struct {
 		path       string
-		prefix     string
+		wantScheme string
 		wantBucket string
 		wantKey    string
 		wantErr    bool
 	}{
 		{"s3://my-bucket/dir/file.parquet", "s3://", "my-bucket", "dir/file.parquet", false},
 		{"gs://my-gcs-bucket/file.csv", "gs://", "my-gcs-bucket", "file.csv", false},
-		{"s3://my-bucket/", "s3://", "", "", true},
-		{"gs://my-bucket", "gs://", "", "", true},
-		{"gs:///key", "gs://", "", "", true},
+		{"local/path/file.csv", "", "", "", false},
+		{"s3://my-bucket/", "", "", "", true},
+		{"gs://my-bucket", "", "", "", true},
+		{"gs:///key", "", "", "", true},
 	}
 	for _, tt := range tests {
-		b, k, err := parseCloudPath(tt.path, tt.prefix)
+		s, b, k, err := parseRemotePath(tt.path)
 		if (err != nil) != tt.wantErr {
-			t.Fatalf("parseCloudPath(%q, %q) err = %v, wantErr %v", tt.path, tt.prefix, err, tt.wantErr)
+			t.Fatalf("parseRemotePath(%q) err = %v, wantErr %v", tt.path, err, tt.wantErr)
 		}
-		if b != tt.wantBucket || k != tt.wantKey {
-			t.Errorf("parseCloudPath(%q, %q) = (%q, %q), want (%q, %q)", tt.path, tt.prefix, b, k, tt.wantBucket, tt.wantKey)
+		if s != tt.wantScheme || b != tt.wantBucket || k != tt.wantKey {
+			t.Errorf("parseRemotePath(%q) = (%q, %q, %q), want (%q, %q, %q)", tt.path, s, b, k, tt.wantScheme, tt.wantBucket, tt.wantKey)
 		}
 	}
 }
@@ -195,6 +196,37 @@ func TestLocalFileOperationsAndInvalidCloudPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(abortPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected aborted file to be removed, stat err = %v", err)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (f failingWriter) Write(_ []byte) (int, error) {
+	return 0, f.err
+}
+
+func TestBufferedWriteCloser_FlushError(t *testing.T) {
+	wantErr := errors.New("write failure")
+	var receivedFlushErr error
+	bwc := newBufferedWriteCloser(failingWriter{err: wantErr},
+		func(flushErr error) error {
+			receivedFlushErr = flushErr
+			return nil
+		},
+		func(err error) error {
+			return err
+		},
+	)
+	if _, err := bwc.Write([]byte("small payload")); err != nil {
+		t.Fatalf("unexpected buffered write error: %v", err)
+	}
+	if err := bwc.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("Close() err = %v, want %v", err, wantErr)
+	}
+	if !errors.Is(receivedFlushErr, wantErr) {
+		t.Fatalf("closeFn received flushErr = %v, want %v", receivedFlushErr, wantErr)
 	}
 }
 

@@ -52,15 +52,7 @@ func NewGenerator(tbl *schema.Table, rowCount int, partition int, seed int64, sm
 	success := false
 	defer func() {
 		if !success {
-			var closeErrs []error
-			for _, s := range streamers {
-				if closeErr := s.Close(); closeErr != nil {
-					closeErrs = append(closeErrs, closeErr)
-				}
-			}
-			if len(closeErrs) > 0 {
-				retErr = errors.Join(retErr, errors.Join(closeErrs...))
-			}
+			retErr = errors.Join(retErr, closeStreamers(streamers))
 		}
 	}()
 	cache := initSourceRowCache(sm)
@@ -124,15 +116,7 @@ func initSequentialStreamers(sm *SourceManager, sources map[string]schema.Source
 		}
 		streamer, err := sm.NewStreamer(name, start, false)
 		if err != nil {
-			var closeErrs []error
-			for _, s := range streamers {
-				if closeErr := s.Close(); closeErr != nil {
-					closeErrs = append(closeErrs, closeErr)
-				}
-			}
-			if len(closeErrs) > 0 {
-				err = errors.Join(err, errors.Join(closeErrs...))
-			}
+			err = errors.Join(err, closeStreamers(streamers))
 			if errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("not enough rows in seed file for source '%s' to satisfy requested row count sequentially: %w", name, err)
 			}
@@ -196,16 +180,17 @@ func advanceStreamer(name string, streamer RowStreamer, cache map[string]any, cf
 }
 
 func (g *Generator) Close() error {
+	return closeStreamers(g.streamers)
+}
+
+func closeStreamers(streamers map[string]RowStreamer) error {
 	var errs []error
-	for _, s := range g.streamers {
+	for _, s := range streamers {
 		if err := s.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func ParseSchemaAST(tbl *schema.Table) error {

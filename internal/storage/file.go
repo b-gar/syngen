@@ -18,7 +18,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-const writeBufferSize = 4 * 1024 * 1024
+const (
+	writeBufferSize = 4 * 1024 * 1024
+	schemeS3        = "s3://"
+	schemeGCS       = "gs://"
+)
 
 var (
 	s3Client  *s3.Client
@@ -56,16 +60,24 @@ func getGCSClient() (*gcs.Client, error) {
 
 // IsRemotePath reports whether path targets a supported cloud storage backend (s3:// or gs://).
 func IsRemotePath(path string) bool {
-	return strings.HasPrefix(path, "s3://") || strings.HasPrefix(path, "gs://")
+	return strings.HasPrefix(path, schemeS3) || strings.HasPrefix(path, schemeGCS)
 }
 
-func parseCloudPath(path, prefix string) (bucket, key string, err error) {
-	trimmed := strings.TrimPrefix(path, prefix)
+func parseRemotePath(path string) (scheme, bucket, key string, err error) {
+	switch {
+	case strings.HasPrefix(path, schemeS3):
+		scheme = schemeS3
+	case strings.HasPrefix(path, schemeGCS):
+		scheme = schemeGCS
+	default:
+		return "", "", "", nil
+	}
+	trimmed := strings.TrimPrefix(path, scheme)
 	parts := strings.SplitN(trimmed, "/", 2)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("invalid cloud path %q: bucket and key are required", path)
+		return "", "", "", fmt.Errorf("invalid cloud path %q: bucket and key are required", path)
 	}
-	return parts[0], parts[1], nil
+	return scheme, parts[0], parts[1], nil
 }
 
 // Reader represents an abstract file reader that supports io.ReaderAt.
@@ -76,18 +88,14 @@ type Reader interface {
 
 // StatFile returns the size of a local file, S3 object, or GCS object in bytes without allocating a read buffer.
 func StatFile(path string) (int64, error) {
-	switch {
-	case strings.HasPrefix(path, "s3://"):
-		bucket, key, err := parseCloudPath(path, "s3://")
-		if err != nil {
-			return 0, err
-		}
+	scheme, bucket, key, err := parseRemotePath(path)
+	if err != nil {
+		return 0, err
+	}
+	switch scheme {
+	case schemeS3:
 		return statS3(bucket, key)
-	case strings.HasPrefix(path, "gs://"):
-		bucket, key, err := parseCloudPath(path, "gs://")
-		if err != nil {
-			return 0, err
-		}
+	case schemeGCS:
 		return statGCS(bucket, key)
 	default:
 		info, err := os.Stat(path)
@@ -135,35 +143,29 @@ func OpenFile(path string) (Reader, int64, error) {
 
 // OpenFileWithSize opens a local file, S3 object, or GCS object using a known size if non-negative to avoid redundant metadata calls.
 func OpenFileWithSize(path string, knownSize int64) (Reader, int64, error) {
-	switch {
-	case strings.HasPrefix(path, "s3://"):
-		bucket, key, err := parseCloudPath(path, "s3://")
-		if err != nil {
-			return nil, 0, err
-		}
-		return openS3(bucket, key, knownSize)
-	case strings.HasPrefix(path, "gs://"):
-		bucket, key, err := parseCloudPath(path, "gs://")
-		if err != nil {
-			return nil, 0, err
-		}
-		return openGCS(bucket, key, knownSize)
-	default:
-		return openLocal(path, knownSize)
-	}
-}
-
-func openS3(bucket, key string, knownSize int64) (Reader, int64, error) {
-	client, err := getS3Client()
+	scheme, bucket, key, err := parseRemotePath(path)
 	if err != nil {
 		return nil, 0, err
 	}
-	size := knownSize
-	if size < 0 {
-		size, err = statS3(bucket, key)
+	if scheme == "" {
+		return openLocal(path, knownSize)
+	}
+	if knownSize < 0 {
+		knownSize, err = StatFile(path)
 		if err != nil {
 			return nil, 0, err
 		}
+	}
+	if scheme == schemeS3 {
+		return openS3(bucket, key, knownSize)
+	}
+	return openGCS(bucket, key, knownSize)
+}
+
+func openS3(bucket, key string, size int64) (Reader, int64, error) {
+	client, err := getS3Client()
+	if err != nil {
+		return nil, 0, err
 	}
 	r := NewBlockCacheReader(size, func(offset, length int64, dst []byte) error {
 		rng := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
@@ -175,28 +177,15 @@ func openS3(bucket, key string, knownSize int64) (Reader, int64, error) {
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if closeErr := resp.Body.Close(); closeErr != nil {
-				log.Printf("error closing S3 response body: %v", closeErr)
-			}
-		}()
-		_, err = io.ReadFull(resp.Body, dst)
-		return err
+		return readFullAndClose(resp.Body, dst, "S3 response body")
 	})
 	return r, size, nil
 }
 
-func openGCS(bucket, key string, knownSize int64) (Reader, int64, error) {
+func openGCS(bucket, key string, size int64) (Reader, int64, error) {
 	client, err := getGCSClient()
 	if err != nil {
 		return nil, 0, err
-	}
-	size := knownSize
-	if size < 0 {
-		size, err = statGCS(bucket, key)
-		if err != nil {
-			return nil, 0, err
-		}
 	}
 	obj := client.Bucket(bucket).Object(key)
 	r := NewBlockCacheReader(size, func(offset, length int64, dst []byte) error {
@@ -204,15 +193,17 @@ func openGCS(bucket, key string, knownSize int64) (Reader, int64, error) {
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if closeErr := rc.Close(); closeErr != nil {
-				log.Printf("error closing GCS range reader: %v", closeErr)
-			}
-		}()
-		_, err = io.ReadFull(rc, dst)
-		return err
+		return readFullAndClose(rc, dst, "GCS range reader")
 	})
 	return r, size, nil
+}
+
+func readFullAndClose(rc io.ReadCloser, dst []byte, label string) error {
+	_, err := io.ReadFull(rc, dst)
+	if closeErr := rc.Close(); closeErr != nil {
+		log.Printf("error closing %s: %v", label, closeErr)
+	}
+	return err
 }
 
 func openLocal(path string, knownSize int64) (Reader, int64, error) {
@@ -233,133 +224,76 @@ func openLocal(path string, knownSize int64) (Reader, int64, error) {
 	return f, info.Size(), nil
 }
 
-type S3WriteCloser struct {
-	pw    *io.PipeWriter
-	bw    *bufio.Writer
-	errCh chan error
-	once  sync.Once
-	err   error
+type bufferedWriteCloser struct {
+	bw      *bufio.Writer
+	closeFn func(flushErr error) error
+	abortFn func(err error) error
+	once    sync.Once
+	err     error
 }
 
-func (s *S3WriteCloser) Write(p []byte) (n int, err error) {
-	return s.bw.Write(p)
+func newBufferedWriteCloser(w io.Writer, closeFn func(flushErr error) error, abortFn func(err error) error) *bufferedWriteCloser {
+	return &bufferedWriteCloser{
+		bw:      bufio.NewWriterSize(w, writeBufferSize),
+		closeFn: closeFn,
+		abortFn: abortFn,
+	}
 }
 
-func (s *S3WriteCloser) Close() error {
-	s.once.Do(func() {
-		flushErr := s.bw.Flush()
-		var closeErr error
-		if flushErr != nil {
-			closeErr = s.pw.CloseWithError(flushErr)
-		} else {
-			closeErr = s.pw.Close()
-		}
-		s.err = errors.Join(flushErr, closeErr, <-s.errCh)
+func (b *bufferedWriteCloser) Write(p []byte) (int, error) {
+	return b.bw.Write(p)
+}
+
+func (b *bufferedWriteCloser) Close() error {
+	b.once.Do(func() {
+		flushErr := b.bw.Flush()
+		b.err = errors.Join(flushErr, b.closeFn(flushErr))
 	})
-	return s.err
+	return b.err
 }
 
-func (s *S3WriteCloser) Abort(err error) {
-	s.once.Do(func() {
-		if closeErr := s.pw.CloseWithError(err); closeErr != nil {
-			log.Printf("error aborting pipe writer: %v", closeErr)
-		}
-		s.err = <-s.errCh
-	})
-}
-
-type GCSWriteCloser struct {
-	w      *gcs.Writer
-	bw     *bufio.Writer
-	cancel context.CancelCauseFunc
-	once   sync.Once
-	err    error
-}
-
-func (g *GCSWriteCloser) Write(p []byte) (int, error) {
-	return g.bw.Write(p)
-}
-
-func (g *GCSWriteCloser) Close() error {
-	g.once.Do(func() {
-		defer g.cancel(nil)
-		flushErr := g.bw.Flush()
-		if flushErr != nil {
-			g.cancel(flushErr)
-		}
-		closeErr := g.w.Close()
-		g.err = errors.Join(flushErr, closeErr)
-	})
-	return g.err
-}
-
-func (g *GCSWriteCloser) Abort(err error) {
-	g.once.Do(func() {
-		// Canceling the context before Close prevents GCS from committing the object.
-		g.cancel(err)
-		if closeErr := g.w.Close(); closeErr != nil && !errors.Is(closeErr, context.Canceled) && (err == nil || !errors.Is(closeErr, err)) {
-			log.Printf("error closing aborted GCS writer: %v", closeErr)
-		}
-	})
-}
-
-type localWriteCloser struct {
-	f    *os.File
-	bw   *bufio.Writer
-	once sync.Once
-	err  error
-}
-
-func (l *localWriteCloser) Write(p []byte) (int, error) {
-	return l.bw.Write(p)
-}
-
-func (l *localWriteCloser) Close() error {
-	l.once.Do(func() {
-		flushErr := l.bw.Flush()
-		closeErr := l.f.Close()
-		l.err = errors.Join(flushErr, closeErr)
-	})
-	return l.err
-}
-
-func (l *localWriteCloser) Abort(_ error) {
-	l.once.Do(func() {
-		name := l.f.Name()
-		if closeErr := l.f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Printf("error closing aborted file %s: %v", name, closeErr)
-		}
-		if rmErr := os.Remove(name); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			log.Printf("error removing aborted file %s: %v", name, rmErr)
-		}
+func (b *bufferedWriteCloser) Abort(err error) {
+	b.once.Do(func() {
+		b.err = b.abortFn(err)
 	})
 }
 
 // CreateFile creates a buffered local file, S3 object, or GCS object for writing.
 func CreateFile(path string) (io.WriteCloser, error) {
-	switch {
-	case strings.HasPrefix(path, "s3://"):
-		bucket, key, err := parseCloudPath(path, "s3://")
-		if err != nil {
-			return nil, err
-		}
+	scheme, bucket, key, err := parseRemotePath(path)
+	if err != nil {
+		return nil, err
+	}
+	switch scheme {
+	case schemeS3:
 		return createS3(bucket, key)
-	case strings.HasPrefix(path, "gs://"):
-		bucket, key, err := parseCloudPath(path, "gs://")
-		if err != nil {
-			return nil, err
-		}
+	case schemeGCS:
 		return createGCS(bucket, key)
 	default:
-		f, err := os.Create(path)
-		if err != nil {
-			return nil, err
-		}
-		return &localWriteCloser{
-			f:  f,
-			bw: bufio.NewWriterSize(f, writeBufferSize),
-		}, nil
+		return createLocal(path)
 	}
+}
+
+func createLocal(path string) (io.WriteCloser, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferedWriteCloser(f,
+		func(_ error) error {
+			return f.Close()
+		},
+		func(_ error) error {
+			name := f.Name()
+			if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+				log.Printf("error closing aborted file %s: %v", name, closeErr)
+			}
+			if rmErr := os.Remove(name); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				log.Printf("error removing aborted file %s: %v", name, rmErr)
+			}
+			return nil
+		},
+	), nil
 }
 
 func createS3(bucket, key string) (io.WriteCloser, error) {
@@ -385,11 +319,23 @@ func createS3(bucket, key string) (io.WriteCloser, error) {
 		}
 		errCh <- upErr
 	}()
-	return &S3WriteCloser{
-		pw:    pw,
-		bw:    bufio.NewWriterSize(pw, writeBufferSize),
-		errCh: errCh,
-	}, nil
+	return newBufferedWriteCloser(pw,
+		func(flushErr error) error {
+			var closeErr error
+			if flushErr != nil {
+				closeErr = pw.CloseWithError(flushErr)
+			} else {
+				closeErr = pw.Close()
+			}
+			return errors.Join(closeErr, <-errCh)
+		},
+		func(abortErr error) error {
+			if closeErr := pw.CloseWithError(abortErr); closeErr != nil {
+				log.Printf("error aborting pipe writer: %v", closeErr)
+			}
+			return <-errCh
+		},
+	), nil
 }
 
 func createGCS(bucket, key string) (io.WriteCloser, error) {
@@ -400,9 +346,21 @@ func createGCS(bucket, key string) (io.WriteCloser, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	w := client.Bucket(bucket).Object(key).NewWriter(ctx)
 	w.ChunkSize = blockSize
-	return &GCSWriteCloser{
-		w:      w,
-		bw:     bufio.NewWriterSize(w, writeBufferSize),
-		cancel: cancel,
-	}, nil
+	return newBufferedWriteCloser(w,
+		func(flushErr error) error {
+			defer cancel(nil)
+			if flushErr != nil {
+				cancel(flushErr)
+			}
+			return w.Close()
+		},
+		func(abortErr error) error {
+			// Canceling the context before Close prevents GCS from committing the object.
+			cancel(abortErr)
+			if closeErr := w.Close(); closeErr != nil && !errors.Is(closeErr, context.Canceled) && (abortErr == nil || !errors.Is(closeErr, abortErr)) {
+				log.Printf("error closing aborted GCS writer: %v", closeErr)
+			}
+			return nil
+		},
+	), nil
 }

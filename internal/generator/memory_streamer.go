@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"unsafe"
 
@@ -17,41 +18,44 @@ import (
 )
 
 type stringColumn struct {
+	name    string
 	data    []byte
 	offsets []uint32
 	nulls   []bool
 }
 
 type memoryParquetStreamer struct {
-	mu           sync.Mutex
-	r            storage.Reader
-	size         int64
-	requiredCols []string
-	columns      map[string]*stringColumn
-	totalRows    int64
-	currentRow   int64
+	mu         sync.Mutex
+	columns    []stringColumn
+	totalRows  int64
+	currentRow int64
 }
 
 func NewMemoryParquetStreamer(r storage.Reader, size int64, requiredCols []string) (RowStreamer, error) {
-	s := &memoryParquetStreamer{
-		r:            r,
-		size:         size,
-		requiredCols: requiredCols,
-		columns:      make(map[string]*stringColumn, len(requiredCols)),
+	cols := make([]stringColumn, len(requiredCols))
+	for i, name := range requiredCols {
+		cols[i].name = name
 	}
-	for _, col := range requiredCols {
-		s.columns[col] = &stringColumn{}
-	}
-	if err := s.Reset(); err != nil {
+	s := &memoryParquetStreamer{columns: cols}
+	if err := s.load(r, size, requiredCols); err != nil {
 		return nil, err
+	}
+	// Release the underlying reader (and its 8MB cloud block cache) once columns are in memory.
+	if err := r.Close(); err != nil {
+		log.Printf("error closing reader after memory parquet load: %v", err)
 	}
 	return s, nil
 }
 
-func (s *memoryParquetStreamer) Reset() (err error) {
-	s.totalRows = 0
+func (s *memoryParquetStreamer) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.currentRow = 0
-	pr, err := file.NewParquetReader(io.NewSectionReader(s.r, 0, s.size))
+	return nil
+}
+
+func (s *memoryParquetStreamer) load(r storage.Reader, size int64, requiredCols []string) (err error) {
+	pr, err := file.NewParquetReader(io.NewSectionReader(r, 0, size))
 	if err != nil {
 		return err
 	}
@@ -62,7 +66,7 @@ func (s *memoryParquetStreamer) Reset() (err error) {
 	if err != nil {
 		return err
 	}
-	pqColIndices, err := resolvePqColIndices(arrRdr, s.requiredCols)
+	pqColIndices, err := resolvePqColIndices(arrRdr, requiredCols)
 	if err != nil {
 		return err
 	}
@@ -72,13 +76,13 @@ func (s *memoryParquetStreamer) Reset() (err error) {
 	}
 	defer rr.Release()
 	s.initColumnBuffers(pr.NumRows())
-	var colIndices map[string]int
+	var colIndices []int
 	for rr.Next() {
 		rec := rr.RecordBatch()
 		numRows := int(rec.NumRows())
 		s.totalRows += int64(numRows)
 		if colIndices == nil {
-			colIndices = mapSchemaFieldIndices(rec.Schema(), s.requiredCols)
+			colIndices = mapSchemaFieldIndices(rec.Schema(), requiredCols)
 		}
 		if err := s.loadRecordBatch(rec, colIndices, numRows); err != nil {
 			return err
@@ -98,46 +102,43 @@ func resolvePqColIndices(arrRdr *pqarrow.FileReader, requiredCols []string) ([]i
 	if err != nil {
 		return nil, err
 	}
-	var pqColIndices []int
+	pqColIndices := make([]int, 0, len(requiredCols))
 	for _, name := range requiredCols {
-		indices := sc.FieldIndices(name)
-		if len(indices) > 0 {
+		if indices := sc.FieldIndices(name); len(indices) > 0 {
 			pqColIndices = append(pqColIndices, indices[0])
 		}
-	}
-	if pqColIndices == nil {
-		pqColIndices = make([]int, 0)
 	}
 	return pqColIndices, nil
 }
 
 func (s *memoryParquetStreamer) initColumnBuffers(totalRows int64) {
-	for _, col := range s.columns {
+	for i := range s.columns {
+		col := &s.columns[i]
 		col.data = make([]byte, 0, totalRows*10)
 		col.offsets = make([]uint32, 1, totalRows+1)
 		col.nulls = make([]bool, 0, totalRows)
 	}
 }
 
-func mapSchemaFieldIndices(schema *arrow.Schema, requiredCols []string) map[string]int {
-	colIndices := make(map[string]int, len(requiredCols))
-	for _, colName := range requiredCols {
-		for i := 0; i < schema.NumFields(); i++ {
-			if schema.Field(i).Name == colName {
-				colIndices[colName] = i
-				break
-			}
+func mapSchemaFieldIndices(schema *arrow.Schema, requiredCols []string) []int {
+	colIndices := make([]int, len(requiredCols))
+	for i, colName := range requiredCols {
+		colIndices[i] = -1
+		if indices := schema.FieldIndices(colName); len(indices) > 0 {
+			colIndices[i] = indices[0]
 		}
 	}
 	return colIndices
 }
 
-func (s *memoryParquetStreamer) loadRecordBatch(rec arrow.RecordBatch, colIndices map[string]int, numRows int) error {
-	for colName, colStruct := range s.columns {
-		idx, ok := colIndices[colName]
-		if !ok {
+func (s *memoryParquetStreamer) loadRecordBatch(rec arrow.RecordBatch, colIndices []int, numRows int) error {
+	for colIdx := range s.columns {
+		colStruct := &s.columns[colIdx]
+		idx := colIndices[colIdx]
+		if idx < 0 {
+			lastOffset := colStruct.offsets[len(colStruct.offsets)-1]
 			for range numRows {
-				colStruct.offsets = append(colStruct.offsets, colStruct.offsets[len(colStruct.offsets)-1])
+				colStruct.offsets = append(colStruct.offsets, lastOffset)
 				colStruct.nulls = append(colStruct.nulls, true)
 			}
 			continue
@@ -157,7 +158,7 @@ func (s *memoryParquetStreamer) loadRecordBatch(rec arrow.RecordBatch, colIndice
 			colStruct.nulls = append(colStruct.nulls, isNull)
 			projectedLen := uint64(len(colStruct.data)) + uint64(len(strVal))
 			if projectedLen > 0xFFFFFFFF {
-				return fmt.Errorf("column '%s' byte data length %d overflows uint32 offset limit", colName, projectedLen)
+				return fmt.Errorf("column '%s' byte data length %d overflows uint32 offset limit", colStruct.name, projectedLen)
 			}
 			colStruct.data = append(colStruct.data, strVal...)
 			colStruct.offsets = append(colStruct.offsets, uint32(len(colStruct.data)))
@@ -189,30 +190,30 @@ func (s *memoryParquetStreamer) NextRow(dst map[string]any) error {
 	if s.currentRow >= s.totalRows {
 		return io.EOF
 	}
-	for _, colName := range s.requiredCols {
-		col, ok := s.columns[colName]
-		if !ok {
-			dst[colName] = nil
+	row := s.currentRow
+	for i := range s.columns {
+		col := &s.columns[i]
+		if col.nulls[row] {
+			dst[col.name] = nil
 			continue
 		}
-		if col.nulls[s.currentRow] {
-			dst[colName] = nil
+		start := col.offsets[row]
+		end := col.offsets[row+1]
+		if start == end {
+			dst[col.name] = ""
 		} else {
-			start := col.offsets[s.currentRow]
-			end := col.offsets[s.currentRow+1]
-			if start == end {
-				dst[colName] = ""
-			} else {
-				dst[colName] = unsafe.String(unsafe.SliceData(col.data[start:end]), end-start)
-			}
+			dst[col.name] = unsafe.String(unsafe.SliceData(col.data[start:end]), end-start)
 		}
 	}
-	s.currentRow++
+	s.currentRow = row + 1
 	return nil
 }
 
 func (s *memoryParquetStreamer) Close() error {
-	return s.r.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.columns = nil
+	return nil
 }
 
 func (s *memoryParquetStreamer) TotalRows() (int64, error) {
