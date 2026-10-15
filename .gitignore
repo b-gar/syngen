@@ -1,0 +1,19 @@
+# Binaries
+bin/
+/syngen
+/schema-validator
+*.test
+
+# Project Specific
+output/
+
+# Large Files
+*.parquet
+
+# Go
+vendor/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

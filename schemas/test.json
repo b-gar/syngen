@@ -1,0 +1,71 @@
+{
+  "columns": [
+    {
+      "name": "c1",
+      "type": "date",
+      "generator": {
+        "method": "range",
+        "min": "2025-01-01",
+        "max": "2026-01-01"
+      }
+    },
+    {
+      "name": "c2",
+      "type": "datetime",
+      "generator": {
+        "method": "range",
+        "min": "-1d",
+        "max": "0d"
+      }
+    },
+    {
+      "name": "c3",
+      "type": "integer",
+      "generator": {
+        "method": "range",
+        "min": 1000,
+        "max": 9999
+      }
+    },
+    {
+      "name": "c4",
+      "type": "bigint",
+      "generator": {
+        "method": "range",
+        "min": 10000000000,
+        "max": 99999999999
+      }
+    },
+    {
+      "name": "c5",
+      "type": "decimal",
+      "precision": 6,
+      "scale": 2,
+      "generator": {
+        "method": "range",
+        "min": 1000,
+        "max": 9999
+      }
+    },
+    {
+      "name": "c6",
+      "type": "boolean"
+    },
+    {
+      "name": "c7",
+      "type": "string",
+      "generator": {
+        "method": "regex",
+        "value": "[A-Z]{3}"
+      }
+    },
+    {
+      "name": "c8",
+      "type": "json_array"
+    },
+    {
+      "name": "c9",
+      "type": "json_object"
+    }
+  ]
+}

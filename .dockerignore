@@ -1,0 +1,17 @@
+# Build Output
+/syngen
+/schema-validator
+output/
+
+# Large Files
+*.parquet
+
+# Version Control
+.git/
+.gitignore
+.dockerignore
+
+# Misc
+.DS_Store
+.idea/
+.vscode/

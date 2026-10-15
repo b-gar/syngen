@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        name: Verify YAML Syntax
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+  - repo: local
+    hooks:
+      - id: golangci-lint
+        name: Lint Go
+        entry: golangci-lint run --fix
+        language: system
+        types: [go]
+        pass_filenames: false

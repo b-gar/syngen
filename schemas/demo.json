@@ -1,0 +1,133 @@
+{
+  "sources": {
+    "demo": {
+      "selection": "wrap",
+      "seed": "demo.csv"
+    }
+  },
+  "columns": [
+    {
+      "name": "c1",
+      "type": "string",
+      "generator": {
+        "method": "lookup",
+        "value": "@demo.color"
+      }
+    },
+    {
+      "name": "c2",
+      "type": "integer",
+      "generator": {
+        "method": "row_number"
+      }
+    },
+    {
+      "name": "c3",
+      "type": "string",
+      "null_percentage": 50,
+      "null_value": "~",
+      "generator": {
+        "method": "constant",
+        "value": "abc"
+      }
+    },
+    {
+      "name": "c4",
+      "type": "string",
+      "generator": {
+        "method": "choices",
+        "choices": [
+          "a",
+          "b",
+          "c"
+        ],
+        "weights": [
+          70,
+          20,
+          10
+        ]
+      }
+    },
+    {
+      "name": "c5",
+      "type": "boolean",
+      "generator": {
+        "method": "choices",
+        "choices": [
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "name": "c6",
+      "type": "decimal",
+      "precision": 5,
+      "scale": 3,
+      "generator": {
+        "method": "range",
+        "min": 10,
+        "max": 99
+      }
+    },
+    {
+      "name": "c7",
+      "type": "date",
+      "generator": {
+        "method": "range",
+        "min": "-2y",
+        "max": "0d"
+      }
+    },
+    {
+      "name": "c8",
+      "type": "datetime"
+    },
+    {
+      "name": "c9",
+      "type": "string",
+      "generator": {
+        "method": "ssn"
+      }
+    },
+    {
+      "name": "c10",
+      "type": "string",
+      "generator": {
+        "method": "first_name",
+        "max_length": 8
+      }
+    },
+    {
+      "name": "c11",
+      "type": "string",
+      "generator": {
+        "method": "street_address",
+        "transform": "upper"
+      }
+    },
+    {
+      "name": "c12",
+      "type": "string",
+      "generator": {
+        "method": "phone_number"
+      }
+    },
+    {
+      "name": "c13",
+      "type": "string",
+      "generator": {
+        "method": "regex",
+        "value": "[a-zA-Z][0-9]{2}"
+      }
+    },
+    {
+      "name": "c14",
+      "type": "json_array"
+    },
+    {
+      "name": "c15",
+      "type": "json_object"
+    }
+  ]
+}
