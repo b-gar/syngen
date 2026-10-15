@@ -5,7 +5,7 @@ This file provides context and instructions for AI coding agents operating withi
 ## Technology Stack
 
 - **Language:** Go (Golang)
-- **Cloud Storage:** AWS S3
+- **Cloud Storage:** AWS S3, Google Cloud Storage (GCS)
 - **File Types:**
   - Parquet (Apache Arrow Format) (preferred for performance)
   - CSV (Comma Separated Values) (ideally only for seed data)

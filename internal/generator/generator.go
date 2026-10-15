@@ -23,8 +23,6 @@ var (
 	dynamicDateRefRegex = regexp.MustCompile(`^@([A-Za-z0-9_]+)(?:\s*([+-])\s*(\d+)([dmywDMYW]))?$`)
 )
 
-const alphanumeric = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
 type ColumnGenerator func() (any, error)
 
 type Generator struct {
@@ -1337,14 +1335,6 @@ func (g *Generator) int64Range(minVal, maxVal int64) int64 {
 			return minVal + int64(v%diff)
 		}
 	}
-}
-
-func fillAlphanumeric4(dst []byte, r uint64) {
-	const n = uint32(len(alphanumeric))
-	dst[0] = alphanumeric[(uint32(uint16(r))*n)>>16]
-	dst[1] = alphanumeric[(uint32(uint16(r>>16))*n)>>16]
-	dst[2] = alphanumeric[(uint32(uint16(r>>32))*n)>>16]
-	dst[3] = alphanumeric[(uint32(uint16(r>>48))*n)>>16]
 }
 
 func (g *Generator) generateMockString(method string) string {

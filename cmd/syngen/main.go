@@ -11,6 +11,7 @@ import (
 	"github.com/b-gar/syngen/internal/config"
 	"github.com/b-gar/syngen/internal/generator"
 	"github.com/b-gar/syngen/internal/schema"
+	"github.com/b-gar/syngen/internal/storage"
 	"github.com/b-gar/syngen/internal/writer"
 )
 
@@ -87,7 +88,7 @@ func findSchemaFile(tableName string) (string, error) {
 }
 
 func prepareOutputDir(outFile, outputPrefix string) error {
-	if strings.HasPrefix(outputPrefix, "s3://") {
+	if storage.IsRemotePath(outputPrefix) {
 		return nil
 	}
 	return os.MkdirAll(filepath.Dir(outFile), 0o755)

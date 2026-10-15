@@ -1,11 +1,11 @@
 # Syngen
 
-**Syngen** is a high-performance **Go-based** synthetic data generator that creates CSV or Parquet files based on JSON schema definitions for data. It integrates natively with Kubernetes and S3.
+**Syngen** is a high-performance **Go-based** synthetic data generator that creates CSV or Parquet files based on JSON schema definitions for data. It integrates natively with Kubernetes, AWS S3, and Google Cloud Storage (GCS).
 
 ## Features
 
 - **High Performance**: Highly optimized single-threaded execution to maximize throughput while minimizing memory footprint, perfectly suited for Kubernetes distribution.
-- **Ultra-Low Memory Profile**: S3 files are streamed via an 8MB sliding memory block cache rather than loaded into memory entirely, keeping heap allocations completely flat even for gigantic tables.
+- **Ultra-Low Memory Profile**: S3 and GCS files are streamed via an 8MB sliding memory block cache rather than loaded into memory entirely, keeping heap allocations completely flat even for gigantic tables.
 - **JSON Schema Driven**: JSON schema files with comprehensive key/value support for a wide variety of data generation capabilities.
 - **Rich Data Types**: Support for string, integer, bigint, decimal, boolean, date, datetime, json_array, and json_object.
 - **Realistic Data**: Realistic built-in synthetic data types for common data like names, addresses, etc. (via `gofakeit`).
@@ -92,7 +92,7 @@ The Go engine strictly uses **Environment Variables** for all execution configur
 ### Environment Variables
 
 - `TABLE_NAME` (Required): The name of the table/schema to generate (e.g. `table`, `test/table2`). The engine automatically searches the `schemas/` directory for a matching file. If multiple schemas share the same basename in different subdirectories, you **must** use a path-qualified identifier (e.g. `test/table2`) to prevent ambiguity.
-- `OUTPUT_PREFIX` (Required): The output directory or S3 bucket prefix where the generated files will be saved. (e.g. `s3://my-bucket/syngen/` or `output/`)
+- `OUTPUT_PREFIX` (Required): The output directory or cloud bucket prefix (S3 or GCS) where the generated files will be saved. (e.g. `s3://my-bucket/syngen/`, `gs://my-bucket/syngen/`, or `output/`)
 - `FORMAT` (Required): Output format (`parquet` or `csv`).
 - `N_ROWS` (Required): The total number of rows to generate.
 - `PARTITION` (Optional): The partition offset for distributed generation. Defaults to 0.
@@ -100,7 +100,7 @@ The Go engine strictly uses **Environment Variables** for all execution configur
 
 ### File Naming Convention
 
-The engine automatically constructs the final output file path by appending the table name and partition directly to the `OUTPUT_PREFIX` string: `{OUTPUT_PREFIX}{TABLE_NAME}_part_{PARTITION}.{FORMAT}`. Because it does not insert any automatic slashes, you can easily pass custom or date-stamped file prefixes (e.g., `OUTPUT_PREFIX=s3://bucket/2026_09_15Z_` becomes `s3://bucket/2026_09_15Z_table_part_0.parquet`, and `OUTPUT_PREFIX=output/` becomes `output/table_part_0.parquet`).
+The engine automatically constructs the final output file path by appending the table name and partition directly to the `OUTPUT_PREFIX` string: `{OUTPUT_PREFIX}{TABLE_NAME}_part_{PARTITION}.{FORMAT}`. Because it does not insert any automatic slashes, you can easily pass custom or date-stamped file prefixes (e.g., `OUTPUT_PREFIX=s3://bucket/2026_09_15Z_` becomes `s3://bucket/2026_09_15Z_table_part_0.parquet`, `OUTPUT_PREFIX=gs://bucket/syngen/` becomes `gs://bucket/syngen/table_part_0.parquet`, and `OUTPUT_PREFIX=output/` becomes `output/table_part_0.parquet`).
 
 ### Running Locally
 
@@ -120,8 +120,8 @@ Syngen is intentionally designed to be run as a single-threaded process per pod 
 
 If you want to generate 50 Million rows using 10 Pods, configure each pod to generate 5 Million rows and assign them an incrementing `PARTITION` number.
 
-- Pod 0: `N_ROWS=5000000 PARTITION=0 OUTPUT_PREFIX=s3://bucket/<datetime>/`
-- Pod 1: `N_ROWS=5000000 PARTITION=1 OUTPUT_PREFIX=s3://bucket/<datetime>/`
+- Pod 0: `N_ROWS=5000000 PARTITION=0 OUTPUT_PREFIX=s3://bucket/<datetime>/` (or `gs://bucket/<datetime>/`)
+- Pod 1: `N_ROWS=5000000 PARTITION=1 OUTPUT_PREFIX=s3://bucket/<datetime>/` (or `gs://bucket/<datetime>/`)
 
 The `PARTITION` variable natively handles the Random Seed and Parent Source offsets so that Pod 1 generates exactly what would have been rows 5,000,000 to 10,000,000 in a single massive run. By using isolated `OUTPUT_PREFIX` directories, each pod acts entirely independently without file contention.
 
